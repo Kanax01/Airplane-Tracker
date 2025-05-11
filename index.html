@@ -6,181 +6,177 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
     <style>
-        body {
-            margin: 0;
-            padding: 0;
-            font-family: Arial, sans-serif;
+        body { 
+            margin: 0; 
+            padding: 0; 
+            height: 100vh;
+            width: 100vw;
             overflow: hidden;
+            font-family: Arial, sans-serif;
         }
-        #map {
-            position: absolute;
-            top: 0;
-            bottom: 0;
-            width: 100%;
+        #map { 
+            width: 100%; 
+            height: 100%; 
         }
-        .info-panel {
+        .status-panel {
             position: absolute;
             top: 10px;
-            right: 10px;
+            left: 10px;
             z-index: 1000;
-            background: rgba(255, 255, 255, 0.9);
+            background: rgba(255,255,255,0.9);
             padding: 10px;
             border-radius: 5px;
             box-shadow: 0 0 10px rgba(0,0,0,0.2);
-            max-width: 250px;
+            max-width: 300px;
         }
-        .aircraft-icon {
-            background: none;
-            border: none;
-        }
-        .aircraft-icon img {
-            width: 16px;
-            height: 16px;
-            transition: transform 0.3s ease-out;
-        }
-        #status {
-            position: absolute;
-            bottom: 10px;
-            left: 10px;
-            z-index: 1000;
-            background: rgba(0, 0, 0, 0.7);
-            color: white;
-            padding: 8px 12px;
-            border-radius: 5px;
-            font-size: 12px;
+        .error {
+            color: #d9534f;
+            font-weight: bold;
         }
     </style>
 </head>
 <body>
     <div id="map"></div>
-    <div class="info-panel">
-        <h3 style="margin-top: 0;">Aircraft Tracker</h3>
-        <div id="stats">
-            <p>Tracking: <span id="plane-count">0</span> aircraft</p>
-            <p>Last update: <span id="last-update">Never</span></p>
+    <div class="status-panel">
+        <h3>Aircraft Tracker</h3>
+        <div id="connection-status">Connecting to OpenSky Network...</div>
+        <div id="data-status">No data received yet</div>
+        <div id="troubleshooting" style="display: none; margin-top: 10px; font-size: 0.9em;">
+            <strong>Troubleshooting:</strong>
+            <ul>
+                <li>Check your internet connection</li>
+                <li>OpenSky API might be down</li>
+                <li>Try refreshing the page</li>
+            </ul>
         </div>
     </div>
-    <div id="status">Loading...</div>
 
     <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
     <script>
-        // Initialize the map centered on Sayville, NY
-        const map = L.map('map', {
-            preferCanvas: true,
-            zoomControl: true,
-            fadeAnimation: false,
-            zoomSnap: 0.1
-        }).setView([40.738, -73.082], 10); // Sayville, NY coordinates
+        // Configuration
+        const config = {
+            center: [40.738, -73.082], // Sayville, NY
+            zoom: 10,
+            updateInterval: 5000, // 5 seconds
+            apiEndpoint: 'https://opensky-network.org/api/states/all',
+            backupApiEndpoint: 'https://opensky-network.org/api/states/all' // Same for now
+        };
 
-        // Lightweight map tiles
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/light_nolabels/{z}/{x}/{y}{r}.png', {
+        // Initialize map
+        const map = L.map('map').setView(config.center, config.zoom);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap'
         }).addTo(map);
 
-        // Aircraft icon
-        function createAircraftIcon(heading) {
-            return L.divIcon({
-                className: 'aircraft-icon',
-                html: `<img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iIzAwN2FmZiIgZD0iTTIyLDE2VjEwTDEyLDVMMiwxMFYxNkwxMiwyMUwyMiwxNk0xMiwxNy42TDYsMTMuNlYxMS4xTDEyLDE0LjZMMTgsMTEuMVYxMy42TDEyLDE3LjZaIi8+PC9zdmc+" 
-                      style="transform: rotate(${heading || 0}deg)">`,
-                iconSize: [16, 16]
-            });
-        }
+        // State management
+        const state = {
+            planes: {},
+            usingBackupAPI: false,
+            lastSuccessfulUpdate: null,
+            retryCount: 0
+        };
 
-        // Store aircraft markers
-        const aircraftMarkers = {};
-        let updateInterval;
+        // DOM elements
+        const elements = {
+            connectionStatus: document.getElementById('connection-status'),
+            dataStatus: document.getElementById('data-status'),
+            troubleshooting: document.getElementById('troubleshooting')
+        };
 
-        // Fetch aircraft data for current map view
-        async function fetchAircraftData() {
-            const bounds = map.getBounds();
-            const bbox = [
-                bounds.getSouth(),
-                bounds.getWest(),
-                bounds.getNorth(),
-                bounds.getEast()
-            ].join(',');
-
-            document.getElementById('status').textContent = "Updating...";
+        // Update connection status
+        function updateStatus(message, isError = false) {
+            elements.connectionStatus.innerHTML = isError 
+                ? `<span class="error">${message}</span>` 
+                : message;
             
-            try {
-                const response = await fetch(`https://opensky-network.org/api/states/all?lamin=${bbox.split(',')[0]}&lomin=${bbox.split(',')[1]}&lamax=${bbox.split(',')[2]}&lomax=${bbox.split(',')[3]}`);
-                const data = await response.json();
-                
-                if (data && data.states) {
-                    updateAircraftDisplay(data.states);
-                    document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
-                }
-            } catch (error) {
-                console.error("Error fetching data:", error);
-                document.getElementById('status').textContent = "Update failed - retrying";
+            if (isError) {
+                elements.troubleshooting.style.display = 'block';
             }
         }
 
-        // Update aircraft markers
-        function updateAircraftDisplay(aircraftData) {
-            const currentMarkers = new Set(Object.keys(aircraftMarkers));
-            let aircraftCount = 0;
-
-            aircraftData.forEach(state => {
-                const [icao24, callsign, originCountry, , , longitude, latitude, altitude, onGround, velocity, heading] = state;
+        // Fetch aircraft data with error handling
+        async function fetchAircraftData() {
+            const apiUrl = state.usingBackupAPI ? config.backupApiEndpoint : config.apiEndpoint;
+            
+            try {
+                updateStatus(`Connecting to ${state.usingBackupAPI ? 'backup ' : ''}API...`);
                 
-                if (longitude && latitude && !onGround) {
-                    aircraftCount++;
-                    const key = icao24;
-                    
-                    if (aircraftMarkers[key]) {
-                        // Update existing marker
-                        const marker = aircraftMarkers[key];
-                        marker.setLatLng([latitude, longitude]);
-                        const icon = marker.getIcon();
-                        icon.options.html = icon.options.html.replace(/rotate\([^)]*\)/, `rotate(${heading || 0}deg)`);
-                        marker.setIcon(icon);
-                        marker.setTooltipContent(generateTooltip(callsign, altitude, velocity, originCountry));
-                    } else {
-                        // Create new marker
-                        aircraftMarkers[key] = L.marker([latitude, longitude], {
-                            icon: createAircraftIcon(heading)
-                        }).addTo(map).bindTooltip(
-                            generateTooltip(callsign, altitude, velocity, originCountry),
-                            { permanent: false, direction: 'right' }
-                        );
-                    }
-                    currentMarkers.delete(key);
+                const response = await fetch(apiUrl);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                if (!data || !data.states) {
+                    throw new Error('Invalid data received from API');
+                }
+                
+                processAircraftData(data.states);
+                state.lastSuccessfulUpdate = new Date();
+                state.retryCount = 0;
+                
+                updateStatus(`Connected to OpenSky Network ${state.usingBackupAPI ? '(backup)' : ''}`);
+                elements.dataStatus.textContent = `Last update: ${state.lastSuccessfulUpdate.toLocaleTimeString()}`;
+                elements.troubleshooting.style.display = 'none';
+                
+            } catch (error) {
+                console.error('Fetch error:', error);
+                state.retryCount++;
+                
+                if (state.retryCount > 3 && !state.usingBackupAPI) {
+                    state.usingBackupAPI = true;
+                    updateStatus('Switching to backup API...');
+                } else {
+                    updateStatus(`Connection failed (attempt ${state.retryCount}): ${error.message}`, true);
+                }
+                
+                elements.dataStatus.textContent = 'Waiting for data...';
+            } finally {
+                setTimeout(fetchAircraftData, config.updateInterval);
+            }
+        }
+
+        // Process aircraft data
+        function processAircraftData(aircraftData) {
+            const currentPlanes = new Set();
+            
+            aircraftData.forEach(plane => {
+                const [id, callsign, , , , lon, lat, alt] = plane;
+                if (!lat || !lon) return;
+                
+                currentPlanes.add(id);
+                
+                if (!state.planes[id]) {
+                    // Create new plane marker
+                    state.planes[id] = L.marker([lat, lon], {
+                        icon: L.divIcon({
+                            html: '✈',
+                            className: 'plane-icon',
+                            iconSize: [24, 24]
+                        })
+                    }).addTo(map).bindTooltip(
+                        `${callsign || 'Unknown'}<br>${alt ? Math.round(alt*3.28)+'ft' : ''}`,
+                        {permanent: false, direction: 'right'}
+                    );
+                } else {
+                    // Update existing plane
+                    state.planes[id].setLatLng([lat, lon]);
                 }
             });
-
-            // Remove old markers
-            currentMarkers.forEach(key => {
-                map.removeLayer(aircraftMarkers[key]);
-                delete aircraftMarkers[key];
+            
+            // Remove old planes
+            Object.keys(state.planes).forEach(id => {
+                if (!currentPlanes.has(id)) {
+                    map.removeLayer(state.planes[id]);
+                    delete state.planes[id];
+                }
             });
-
-            document.getElementById('plane-count').textContent = aircraftCount;
-            document.getElementById('status').textContent = "Ready";
         }
 
-        // Generate tooltip content
-        function generateTooltip(callsign, altitude, speed, origin) {
-            return `
-                <b>Callsign:</b> ${callsign || 'N/A'}<br>
-                <b>Altitude:</b> ${altitude ? Math.round(altitude * 3.28084) + ' ft' : 'N/A'}<br>
-                <b>Speed:</b> ${speed ? Math.round(speed * 1.94384) + ' knots' : 'N/A'}<br>
-                <b>Origin:</b> ${origin || 'N/A'}
-            `;
-        }
-
-        // Start tracking with view-based updates
-        function startTracking() {
-            fetchAircraftData(); // Initial load
-            updateInterval = setInterval(fetchAircraftData, 5000); // Refresh every 5 sec
-
-            // Update when map moves
-            map.on('moveend', fetchAircraftData);
-        }
-
-        // Initialize
-        startTracking();
+        // Start the application
+        fetchAircraftData();
     </script>
 </body>
 </html>
